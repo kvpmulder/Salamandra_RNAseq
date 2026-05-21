@@ -1,0 +1,49 @@
+#!/bin/bash
+# ----------------Parameters---------------------- #
+#PBS -l nodes=1:ppn=12,walltime=12:30:00
+#PBS -M kvpmulder@gmail.com
+#PBS -m abe 
+#PBS -N 1_FastQC
+#PBS -o 1_FastQC.log
+#PBS -j oe
+
+# ----------------Modules------------------------- #
+module load FastQC
+
+# ----------------Environment Setup--------------- #
+echo "+ $(date): Job $JOB_NAME started in $QUEUE with jobID=$JOB_ID on $HOSTNAME"
+echo "Number of slots: $PBS_NP"
+export OMP_NUM_THREADS=$PBS_NP
+trap 'echo "+ $(date): Job $JOB_NAME done"' EXIT
+cd $PBS_O_WORKDIR || { echo "ERROR: Could not change directory to $PBS_O_WORKDIR"; exit 1; }
+
+# --------------------------------------------------- #
+# STEP 1: QUALITY CONTROL
+# --------------------------------------------------- #
+# Set input and output directories
+dir_in=$(pwd)
+dir_out=$(pwd)/FastQC_RAW
+
+# Create output directory if it does not exist
+[ ! -d "$dir_out" ] && mkdir -p "$dir_out"
+
+# Collect all FASTQ files from the current directory
+raw_fastq_files=(${dir_in}/*.fastq.gz)
+
+# Sanity check: Ensure files were actually found
+if [ ${#raw_fastq_files[@]} -eq 0 ]; then
+    echo "ERROR: No FASTQ files found in ${dir_in}. Exiting."
+    exit 1
+fi
+
+# Run FastQC on all raw files
+echo "Starting FastQC on raw files..."
+fastqc -t $PBS_NP -q -o "${dir_out}" "${raw_fastq_files[@]}" 2>>FastQC_Error.log
+
+# Verify successful completion
+if [ $? -eq 0 ]; then
+    echo "SUCCESS: FastQC completed successfully."
+else
+    echo "ERROR: FastQC encountered an error."
+    exit 1
+fi

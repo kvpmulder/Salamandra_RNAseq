@@ -1,0 +1,77 @@
+#!/bin/bash
+# ----------------Parameters---------------------- #
+#PBS -l nodes=1:ppn=16
+#PBS -l mem=155gb
+#PBS -l walltime=3:00:00:00
+#PBS -M kvpmulder@gmail.com
+#PBS -m abe
+#PBS -N 6_Salmon
+#PBS -o 6_Salmon.log
+#PBS -j oe
+
+# ----------------Modules------------------------- #
+module load seqtk
+
+# ----------------Environment Setup--------------- #
+export NSLOTS=$PBS_NP
+cd $PBS_O_WORKDIR || { echo "ERROR: Could not change directory."; exit 1; }
+
+# --------------------------------------------------- #
+# STEP 1: PREPARE TRANSCRIPTOME
+# --------------------------------------------------- #
+cp ../5_Entap/AnnotatedContigs*.txt AnnotatedContigs.txt
+cp ../4_TransPI/results/evigene/*.okay.fa cleaned_transcriptome.fa
+
+# Generate subset FASTA
+subset_fasta="subset_annotated_transcriptome.fasta"
+seqtk subseq cleaned_transcriptome.fa AnnotatedContigs.txt > "$subset_fasta"
+
+num_transcripts=$(grep -c '^>' "$subset_fasta")
+transcriptome_name="Trin_Annotated_${num_transcripts}.fasta"
+mv "$subset_fasta" "$transcriptome_name"
+
+# --------------------------------------------------- #
+# STEP 2: INDEXING
+# --------------------------------------------------- #
+module purge
+module load GCC/13.3.0
+module load Salmon/1.10.3-GCC-13.3.0
+
+echo "Indexing transcriptome: $transcriptome_name"
+salmon index -t "$transcriptome_name" -p $NSLOTS -i "${transcriptome_name}.index"
+
+# --------------------------------------------------- #
+# STEP 3: QUANTIFICATION
+# --------------------------------------------------- #
+output_dir="quants_${num_transcripts}"
+mkdir -p "$output_dir"
+
+for i in ../2_CLEAN/*_1_val_1.fq.gz; do
+    base_name=$(basename "${i%_1_val_1.fq.gz}")
+    echo "Quantifying sample: $base_name"
+    salmon quant -i "${transcriptome_name}.index" -l IU \
+        -1 "$i" \
+        -2 "${i/_1_val_1/_2_val_2}" \
+        -p $NSLOTS --quiet --gcBias --numGibbsSamples 50 --dumpEq --writeOrphanLinks --seqBias \
+        -o "${output_dir}/${base_name}_qt"
+done
+
+# --------------------------------------------------- #
+# STEP 4: SUMMARY & CLEANUP
+# --------------------------------------------------- #
+echo "Generating Mapping Rate Summary..."
+summary_file="mapping_rates_summary.tsv"
+echo -e "Sample\tPercent_Mapped" > "$summary_file"
+
+for d in ${output_dir}/*/; do
+    sample=$(basename "$d" | sed 's/_qt//')
+    rate=$(grep '"percent_mapped"' "${d}aux_info/meta_info.json" | awk -F': ' '{print $2}' | sed 's/,//')
+    echo -e "${sample}\t${rate}" >> "$summary_file"
+done
+
+# Compress large files and remove log dirs
+find "$output_dir" -type f -name "quant.sf" -exec gzip {} \;
+find "$output_dir" -type d -name "logs" -exec rm -r {} +
+
+echo "SUCCESS: Salmon pipeline completed."
+echo "+ $(date): Job $JOB_NAME done"

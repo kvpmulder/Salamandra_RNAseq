@@ -1,0 +1,109 @@
+#!/bin/bash
+# ----------------Parameters---------------------- #
+#PBS -l nodes=1:ppn=8,walltime=18:30:00
+#PBS -M kvpmulder@gmail.com
+#PBS -m abe 
+#PBS -N 2_Clean
+#PBS -o 2_Clean.log
+#PBS -j oe # merge standard error and log
+#
+# ----------------Modules------------------------- #
+module load Trim_Galore
+#
+# ----------------WorkDir------------------------- #
+cd $PBS_O_WORKDIR || { echo "Failed to change directory to $PBS_O_WORKDIR"; exit 1; }
+#
+echo + `date` job $JOB_NAME started in $QUEUE with jobID=$JOB_ID on $HOSTNAME
+echo "Number of slots: $PBS_NP"
+export OMP_NUM_THREADS=$PBS_NP
+export NSLOTS=$PBS_NP
+#
+
+########## Step 1: Cleaning the Reads ##########
+
+# Set input and output directories
+dir_in=$(pwd)/../1_RAW
+dir_out=$(pwd)
+report_dir="${dir_out}/TrimGaloreReports"
+mkdir -p "$report_dir"
+
+# Sanity check: Ensure input files are present
+if [ $(ls ${dir_in}/*_1.fastq.gz 2>/dev/null | wc -l) -eq 0 ]; then
+    echo "No input files found in ${dir_in}. Exiting."
+    exit 1
+fi
+
+echo "Starting trim_galore..."
+for i in ${dir_in}/*_1.fastq.gz; do
+    i2=${i/_1.fastq/_2.fastq} # Get the corresponding pair
+
+    if [ ! -f "$i2" ]; then
+        echo "Skipping $i. Corresponding pair $i2 not found."
+        continue
+    fi
+
+    echo "Processing $i and $i2 with trim_galore..."
+    trim_galore "$i" "$i2" \
+        --cores $NSLOTS \
+        --quality 5 \
+        --paired \
+        --max_n 1 \
+        --length 50 \
+        -o "$dir_out" || { echo "Error running trim_galore on $i and $i2. Skipping."; continue; }
+done
+echo "trim_galore completed."
+
+# Move reports to the report directory
+mv "${dir_out}"/*txt "$report_dir"
+
+########## Step 2: Run FastQC on all cleaned files  ############
+fastqc_dir="${dir_out}/FastQC_CLEAN"
+mkdir -p "$fastqc_dir"
+
+echo "Starting FastQC on cleaned files..."
+fastqc -t $PBS_NP -q -o "$fastqc_dir" "${dir_out}"/*val_1.fq.gz "${dir_out}"/*val_2.fq.gz || { echo "Error running FastQC."; exit 1; }
+echo "FastQC completed."
+
+
+########## Step 3: Count raw and clean reads and save to file ############
+
+echo "Counting reads in 1_RAW and 2_CLEAN directories..."
+
+# Directories and output file
+raw_dir="../1_RAW"
+clean_dir="../2_CLEAN"
+output_file="../read_counts.tsv"
+
+# Create the output file and add a header
+echo -e "Sample\tRaw\tClean" > "$output_file"
+
+# Function to count reads
+count_reads() {
+    file=$1
+    zcat "$file" | wc -l | awk '{print $1 / 4}'  # Count total reads (4 lines per read)
+}
+
+# Collect unique sample names by normalizing file names
+samples=$(ls "${raw_dir}"/*_1.fastq.gz 2>/dev/null | sed -E 's#.*/##;s/_1\.fastq\.gz//' | sort | uniq)
+
+# Loop over samples and calculate read counts
+for sample in $samples; do
+    raw_file="${raw_dir}/${sample}_1.fastq.gz"
+    clean_file="${clean_dir}/${sample}_1_val_1.fq.gz"
+    
+    # Default read counts to 0
+    raw_count=0
+    clean_count=0
+
+    # Count reads if the files exist
+    [[ -f "$raw_file" ]] && raw_count=$(count_reads "$raw_file")
+    [[ -f "$clean_file" ]] && clean_count=$(count_reads "$clean_file")
+    
+    # Append to the output file
+    echo -e "$sample\t$raw_count\t$clean_count" >> "$output_file"
+done
+
+echo "Read counting completed. Results saved to $output_file."
+
+#
+echo = `date` job $JOB_NAME done

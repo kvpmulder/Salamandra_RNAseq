@@ -1,0 +1,77 @@
+#!/bin/bash
+# ----------------Parameters---------------------- #
+#PBS -l nodes=1:ppn=16
+#PBS -l mem=110gb
+#PBS -l walltime=3:00:00:00
+#PBS -M kvpmulder@gmail.com
+#PBS -m abe
+#PBS -N 5_Entap
+#PBS -o 5_Entap.log
+#PBS -j oe
+
+# ----------------Modules------------------------- #
+module load GCC/12.3.0
+
+# ----------------Environment Setup--------------- #
+cd $PBS_O_WORKDIR || { echo "ERROR: Could not change directory."; exit 1; }
+
+# Check RHEL 9 compliance
+ldd_version=$(ldd --version | head -n 1 | awk '{print $NF}')
+if [[ $(printf '%s\n' "2.34" "$ldd_version" | sort -V | head -n1) != "2.34" ]]; then
+    echo "ERROR: This script must run on a RHEL 9 cluster." >> 5_Entap.log
+    exit 1
+fi
+
+source /kyukon/data/gent/vo/001/gvo00192/WHG_software/miniconda3/etc/profile.d/conda.sh
+conda activate entap_env
+dir_Entap_Kevin=/kyukon/data/gent/vo/001/gvo00192/WHG_software/Entap
+
+# --------------------------------------------------- #
+# STEP 1: INITIAL ANNOTATION (ROUND 1)
+# --------------------------------------------------- #
+cp ../4_TransPI/results/evigene/*.okay.fa .
+echo "Starting EnTAP annotation (Round 1)..."
+${dir_Entap_Kevin}/EnTAP-v2.1.0/EnTAP --run --run-ini entap_run.params --entap-ini entap_config.ini
+
+# --------------------------------------------------- #
+# STEP 2: MITOCHONDRIAL RECOVERY (ROUND 2)
+# --------------------------------------------------- #
+echo "Starting Mitochondrial gene recovery logic..."
+input_fasta=$(ls entap_outfiles/transcriptomes/*.okay.fa | head -n 1)
+cds_file=$(ls entap_outfiles/frame_selection/TransDecoder/*.transdecoder.cds | head -n 1)
+
+# Generate list of missing sequences
+cat "$cds_file" | grep ">" | cut -f1 -d " " | sed 's/.p[0-9]*//' | sort > translated_headers.txt 
+cat "$input_fasta" | grep ">" | cut -f1 -d " " | sort > all_headers.txt
+comm -23 all_headers.txt translated_headers.txt | sed 's/>//' > missing_mito.txt
+
+echo "$(wc -l < missing_mito.txt) sequences identified for Mitochondrial re-scan."
+module load seqtk/1.4-GCC-12.3.0
+seqtk subseq "$input_fasta" missing_mito.txt > missing_mito.fasta 
+
+# Perform TransDecoder prediction
+module load TransDecoder
+TransDecoder.LongOrfs -G Mitochondrial-Vertebrates -t missing_mito.fasta 
+TransDecoder.Predict --single_best_only -G Mitochondrial-Vertebrates -t missing_mito.fasta 
+
+# Merge newly predicted proteins
+pep_target=$(ls entap_outfiles/frame_selection/TransDecoder/*.transdecoder.pep | head -n 1)
+cat missing_mito.fasta.transdecoder.pep >> "$pep_target"
+
+# Clear temporary search data
+rm -r entap_outfiles/similarity_search/
+rm -r entap_outfiles/gene_family/
+
+# --------------------------------------------------- #
+# STEP 3: FINAL CONSOLIDATION
+# --------------------------------------------------- #
+echo "Resuming EnTAP annotation with recovered Mitochondrial genes..."
+${dir_Entap_Kevin}/EnTAP-v2.1.0/EnTAP --run --run-ini entap_run.params --entap-ini entap_config.ini --resume
+
+# Create mapping files
+line_count=$(cat entap_outfiles/gene_family/EggNOG/*.emapper.annotations | grep -v "^#" | cut -f1,9 | grep -v "-" | wc -l)
+cat entap_outfiles/gene_family/EggNOG/*.emapper.annotations | grep -v "^#" | cut -f1,9 | grep -v "-" | cut -f1 > AnnotatedContigs_${line_count}.txt
+cat entap_outfiles/gene_family/EggNOG/*.emapper.annotations | grep -v "^#" | cut -f1,9 | grep -v "-" > tx2gene_${line_count}.txt
+
+echo "SUCCESS: Annotation complete."
+echo "+ $(date): Job $JOB_NAME done"

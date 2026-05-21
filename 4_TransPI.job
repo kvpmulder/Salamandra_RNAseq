@@ -1,0 +1,48 @@
+#!/bin/bash
+# ----------------Parameters---------------------- #
+#PBS -l nodes=1:ppn=16
+#PBS -l mem=155gb
+#PBS -l walltime=0:08:00:00
+#PBS -M kvpmulder@gmail.com
+#PBS -m abe
+#PBS -N 4_TransPI
+#PBS -o 4_TransPI.log
+#PBS -j oe
+
+# ----------------Modules------------------------- #
+module load Java/11.0.27
+module load GCC/12.3.0
+module load BLAST+/2.14.1-gompi-2023a
+module load CD-HIT/4.8.1-GCC-12.3.0
+module load Exonerate/2.4.0-GCC-12.3.0
+
+# ----------------Environment Setup--------------- #
+echo "+ $(date): Job $JOB_NAME started in $QUEUE with jobID=$JOB_ID on $HOSTNAME"
+echo "Number of slots: $PBS_NP"
+export OMP_NUM_THREADS=$PBS_NP
+export NSLOTS=$PBS_NP
+cd $PBS_O_WORKDIR || { echo "ERROR: Could not change directory to $PBS_O_WORKDIR"; exit 1; }
+
+# Add personal software path for conda environments
+export PATH="/kyukon/data/gent/vo/001/gvo00192/WHG_software/miniconda3/bin:$PATH"
+
+# --------------------------------------------------- #
+# STEP 1: INITIALIZATION
+# --------------------------------------------------- #
+# Copy TransPI workflow files and databases locally
+echo "Copying TransPI files and databases..."
+cp -r /kyukon/data/gent/vo/001/gvo00192/WHG_software/TransPi/* .
+mkdir -p onlyEvi
+
+# Prepare input assembly file
+cp ../3_Trinity/*Trinity.fasta onlyEvi/
+
+# --------------------------------------------------- #
+# STEP 2: RUN TRANSPI
+# --------------------------------------------------- #
+# Execute Nextflow pipeline
+echo "Starting TransPI..."
+./nextflow run TransPi.nf --onlyEvi -profile conda -resume
+
+echo "SUCCESS: TransPI pipeline execution complete."
+echo "+ $(date): Job $JOB_NAME done"

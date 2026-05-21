@@ -1,0 +1,60 @@
+#!/bin/bash
+# ----------------Parameters---------------------- #
+#PBS -l nodes=1:ppn=12
+#PBS -l mem=550gb
+#PBS -l walltime=3:00:00:00
+#PBS -M kvpmulder@gmail.com
+#PBS -m abe
+#PBS -N 3_Trinity
+#PBS -o 3_Trinity.log
+#PBS -j oe
+
+# ----------------Modules------------------------- #
+module load Trinity
+module load BioPerl
+
+# ----------------Environment Setup--------------- #
+echo "+ $(date): Job $JOB_NAME started in $QUEUE with jobID=$JOB_ID on $HOSTNAME"
+echo "Number of slots: $PBS_NP"
+export OMP_NUM_THREADS=$PBS_NP
+cd $PBS_O_WORKDIR || { echo "ERROR: Could not change directory to $PBS_O_WORKDIR"; exit 1; }
+
+# --------------------------------------------------- #
+# STEP 1: SANITY CHECKS
+# --------------------------------------------------- #
+# Check for mandatory sample definition file
+samples_file="TrinitySamples.txt"
+if [ ! -f "$samples_file" ]; then
+    echo "ERROR: Samples file '$samples_file' not found."
+    exit 1
+fi
+
+# Verify the first file listed in the sample file exists to avoid mid-run failure
+first_read=$(head -n 1 "$samples_file" | cut -f3)
+if [ ! -f "$first_read" ]; then
+    echo "ERROR: Data file '$first_read' not found. Check paths in $samples_file."
+    exit 1
+fi
+
+# --------------------------------------------------- #
+# STEP 2: ASSEMBLY
+# --------------------------------------------------- #
+# Execute Trinity assembly
+echo "Starting Trinity assembly..."
+Trinity \
+    --seqType fq \
+    --max_memory 510G \
+    --samples_file "$samples_file" \
+    --full_cleanup \
+    --CPU $PBS_NP \
+    --output trinity_Salamandra
+
+# Verify the final fasta output exists
+if [ -f "trinity_Salamandra.Trinity.fasta" ]; then
+    echo "SUCCESS: Trinity assembly completed successfully."
+else
+    echo "ERROR: Trinity output file was not found."
+    exit 1
+fi
+
+echo "+ $(date): Job $JOB_NAME done"
